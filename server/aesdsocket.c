@@ -10,21 +10,181 @@
 #include <signal.h>
 #include <syslog.h>
 #include <errno.h>
+#include <pthread.h>
+#include "queue.h"
+#include <stdbool.h>
+#include <time.h>
+#include <sys/time.h>
+#include <stdint.h>
 
 #define BUFFER_SIZE 1024
 #define FILE_PATH "/var/tmp/aesdsocketdata"
 
 int sockfd = -1;
-int clientfd = -1;
+//int clientfd = -1;
+
 FILE *fp = NULL;
+timer_t timer_id = NULL;
+
+pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
+struct thread_data{
+    int clientfd;
+    char *ip_str;
+    bool complete;
+    pthread_t *thread;
+};
+
+struct slist_data_s {
+    struct thread_data *value;
+    SLIST_ENTRY(slist_data_s) entries;
+};
+SLIST_HEAD(slisthead, slist_data_s) head;
+
+void* threadfunc(void* thread_param)
+{
+    struct thread_data* thread_func_args = (struct thread_data *) thread_param;
+    syslog(LOG_DEBUG, "Accepted connection from %s", thread_func_args->ip_str);  
+
+    char buffer[BUFFER_SIZE];
+
+    //  Receives data over the connection and appends to file /var/tmp/aesdsocketdata, creating this file if it doesn’t exist.
+    if (pthread_mutex_lock(&lock) != 0){
+        close(thread_func_args->clientfd);
+        return thread_param;
+    };
+
+    // Open file for writing
+    fp = fopen(FILE_PATH, "a+");
+    if (fp == NULL) {
+        syslog(LOG_ERR, "Failed to open file '%s' for writing", FILE_PATH);
+        pthread_mutex_unlock(&lock);
+        close(thread_func_args->clientfd);
+        return thread_param;
+    }   
+
+    ssize_t bytes_received = 0;
+    size_t buf_size = BUFFER_SIZE;
+    char *temp_buffer = malloc(buf_size);
+    if (!temp_buffer) {
+        syslog(LOG_ERR, "Memory allocation failed");
+        pthread_mutex_unlock(&lock);
+        close(thread_func_args->clientfd);
+        fclose(fp);
+        return thread_param;
+    }
+    temp_buffer[0] = '\0';
+    size_t total_len = 0;
+
+    // Receive data from the client
+    while ((bytes_received = recv(thread_func_args->clientfd, buffer, BUFFER_SIZE - 1, 0)) > 0) {
+        buffer[bytes_received] = '\0';
+
+        if (total_len + bytes_received + 1 > buf_size) {
+            buf_size *= 2;
+            char *new_buf = realloc(temp_buffer, buf_size);
+            if (!new_buf) {
+                syslog(LOG_ERR, "Memory reallocation failed");
+                free(temp_buffer);
+                close(thread_func_args->clientfd);
+                fclose(fp);
+                continue;
+            }
+            temp_buffer = new_buf;
+        }
+        strcat(temp_buffer, buffer);
+        total_len += bytes_received;
+        if (strchr(buffer, '\n')) {
+            fprintf(fp, "%s", temp_buffer);
+            fflush(fp);
+            
+            fseek(fp, 0, SEEK_SET);
+            while (fgets(buffer, BUFFER_SIZE, fp)){
+                ssize_t ret = send(thread_func_args->clientfd, buffer, strlen(buffer), 0);
+                if (ret == -1){
+                    syslog(LOG_ERR, "Failed send %s", strerror(errno));
+                }
+            }
+
+            break;
+        }
+    }
+    free(temp_buffer);
+
+    // Clean up
+    fclose(fp);
+    fp = NULL;
+    pthread_mutex_unlock(&lock);
+    close(thread_func_args->clientfd);
+    // Logs message to the syslog “Closed connection from XXX” where XXX is the IP address of the connected client.
+    syslog(LOG_INFO, "Closed connection from %s", thread_func_args->ip_str);
+
+    thread_func_args->complete = true;
+
+    return thread_param;
+}
+
+struct timer_thread_data {
+
+};
+
+static void timer_thread ( union sigval sigval ){
+    //struct timer_thread_data *td = (struct timer_thread_data*) sigval.sival_ptr;
+    if (pthread_mutex_lock(&lock) != 0) {
+        syslog(LOG_ERR, "Error %d (%s) locking thread data!", errno, strerror(errno));
+    } else {
+        // Open file for writing
+        fp = fopen(FILE_PATH, "a");
+        if (fp == NULL) {
+            syslog(LOG_ERR, "Failed to open file '%s' for writing", FILE_PATH);
+            pthread_mutex_unlock(&lock);
+            return;
+        }   
+        struct timespec ts;
+        if (clock_gettime(0, &ts) == -1) {
+            perror("localtime");
+            fclose(fp);
+            pthread_mutex_unlock(&lock);
+            return;
+        }
+        time_t now = ts.tv_sec;
+        struct tm *tm_now = localtime(&now);
+        if (tm_now == NULL) {
+            perror("localtime");
+            fclose(fp);
+            pthread_mutex_unlock(&lock);
+            return;
+        }
+
+        char time_str[20];
+        strftime(time_str,sizeof(time_str),"%D %X", tm_now);
+        fprintf(fp, "timestamp:%s\n", time_str);
+
+        fclose(fp);
+        pthread_mutex_unlock(&lock);
+    }
+}
 
 void cleanup_and_exit(int signo) {
     syslog(LOG_INFO, "Caught signal, exiting");
 
-    if (clientfd != -1)
-        close(clientfd);
+    struct slist_data_s * e = NULL;
+    while (!SLIST_EMPTY(&head))
+    {
+        e = SLIST_FIRST(&head);
+        SLIST_REMOVE(&head, e, slist_data_s, entries);
+        pthread_join(*e->value->thread, NULL);
+        close(e->value->clientfd);
+        free(e);
+        e = NULL;
+    }
+    
+    /*if (clientfd != -1)
+        close(clientfd);*/
     if (sockfd != -1)
         close(sockfd);
+    if (timer_id != NULL)
+        timer_delete(timer_id);
     if (fp)
         fclose(fp);
     remove(FILE_PATH);
@@ -37,7 +197,6 @@ int main(int argc, char *argv[]) {
 
     signal(SIGINT, cleanup_and_exit);
     signal(SIGTERM, cleanup_and_exit);
-
 
     // Open syslog with the LOG_USER facility
     openlog("aesdsocket", LOG_PID, LOG_USER);
@@ -104,6 +263,33 @@ int main(int argc, char *argv[]) {
             exit(EXIT_FAILURE);
         }
     }
+    struct sigevent sev;
+    struct timer_thread_data td;
+
+    int clock_id = CLOCK_MONOTONIC;
+    memset(&sev,0,sizeof(struct sigevent));
+    sev.sigev_notify = SIGEV_THREAD;
+    sev.sigev_value.sival_ptr = &td;
+    sev.sigev_notify_function = timer_thread;
+    if (timer_create(clock_id, &sev,&timer_id) != 0){
+        syslog(LOG_ERR, "Error creating timer: %s", strerror(errno));
+    } else {
+        /*struct timespec sleep_time;
+        sleep_time.tv_sec = 10;
+        sleep_time.tv_nsec = 1000000;
+        run_timer_test(clock_id,timer_id,10,&sleep_time,&td);*/
+
+        struct itimerspec its;
+        its.it_value.tv_sec = 10; // Initial expiration
+        its.it_value.tv_nsec = 0;
+        its.it_interval.tv_sec = 10; // Interval for periodic timer
+        its.it_interval.tv_nsec = 0;
+
+        // Start the timer
+        if (timer_settime(timer_id, 0, &its, NULL) == -1) {
+            syslog(LOG_ERR, "Error setting timer: %s", strerror(errno));
+        }
+    }
 
     // Listens for and accepts a connection
 
@@ -113,87 +299,58 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    char buffer[BUFFER_SIZE];
+    struct sockaddr_in addr; 
+    socklen_t addrlen = sizeof(addr);
+    int clientfd;
+    char ip_str[INET_ADDRSTRLEN];
+
+    SLIST_INIT(&head);
 
     while (1){
 
         // Logs message to the syslog “Accepted connection from xxx” where XXXX is the IP address of the connected client.
-        struct sockaddr_in addr; 
-        socklen_t addrlen = sizeof(addr);
+        
         clientfd = accept(sockfd,(struct sockaddr *)&addr, &addrlen);
         if (clientfd == -1){
             syslog(LOG_ERR, "Error when accepting connection: %s", strerror(errno));
             continue;
         } 
-        char ip_str[INET_ADDRSTRLEN];
-        inet_ntop(AF_INET, &(addr.sin_addr), ip_str, INET_ADDRSTRLEN); //?
-        syslog(LOG_DEBUG, "Accepted connection from %s", ip_str);
-
-        //  Receives data over the connection and appends to file /var/tmp/aesdsocketdata, creating this file if it doesn’t exist.
-
-
-        // Open file for writing
-        fp = fopen(FILE_PATH, "a+");
-        if (fp == NULL) {
-            syslog(LOG_ERR, "Failed to open file '%s' for writing", FILE_PATH);
-            close(clientfd);
-            continue;
-        }   
-
-        ssize_t bytes_received = 0;
-        size_t buf_size = BUFFER_SIZE;
-        char *temp_buffer = malloc(buf_size);
-        if (!temp_buffer) {
-            syslog(LOG_ERR, "Memory allocation failed");
-            close(clientfd);
-            fclose(fp);
+        inet_ntop(AF_INET, &(addr.sin_addr), ip_str, INET_ADDRSTRLEN);
+        struct thread_data* params = malloc(sizeof(struct thread_data));
+        if (params == NULL) {
+            syslog(LOG_ERR, "Failed to allocate memory");
             continue;
         }
-        temp_buffer[0] = '\0';
-        size_t total_len = 0;
+        params->clientfd = clientfd;
+        params->ip_str = ip_str;
+        params->complete = false;
 
-        // Receive data from the client
-        while ((bytes_received = recv(clientfd, buffer, BUFFER_SIZE - 1, 0)) > 0) {
-            buffer[bytes_received] = '\0';
+        pthread_t *thread = malloc(sizeof(pthread_t));
+        params->thread = thread;
+        int rc = pthread_create(thread,NULL,threadfunc, params);
+        if (rc != 0) {
+            syslog(LOG_ERR, "Failed to create thread");
+            continue;
+        }
+        struct slist_data_s* datap = NULL;
+        datap = malloc(sizeof(struct slist_data_s));
+        datap->value = params;
+        SLIST_INSERT_HEAD(&head, datap, entries);
 
-            if (total_len + bytes_received + 1 > buf_size) {
-                buf_size *= 2;
-                char *new_buf = realloc(temp_buffer, buf_size);
-                if (!new_buf) {
-                    syslog(LOG_ERR, "Memory reallocation failed");
-                    free(temp_buffer);
-                    close(clientfd);
-                    fclose(fp);
-                    continue;
-                }
-                temp_buffer = new_buf;
-            }
-            strcat(temp_buffer, buffer);
-            total_len += bytes_received;
-            if (strchr(buffer, '\n')) {
-                fprintf(fp, "%s", temp_buffer);
-                fflush(fp);
-                
-                fseek(fp, 0, SEEK_SET);
-                while (fgets(buffer, BUFFER_SIZE, fp)){
-                    ssize_t ret = send(clientfd, buffer, strlen(buffer), 0);
-                    if (ret == -1){
-                        syslog(LOG_ERR, "Failed send %s", strerror(errno));
-                    }
-                }
-
-                break;
+        struct slist_data_s* next = NULL;
+        SLIST_FOREACH_SAFE(datap, &head, entries, next)
+        {
+            if (datap->value->complete) {
+                pthread_join(*datap->value->thread, NULL);
+                SLIST_REMOVE(&head, datap, slist_data_s, entries);
+                free(datap->value);
+                free(datap);
+                datap = NULL;
             }
         }
-        free(temp_buffer);
-
-        // Clean up
-        fclose(fp);
-        fp = NULL;
-        close(clientfd);
-        // Logs message to the syslog “Closed connection from XXX” where XXX is the IP address of the connected client.
-        syslog(LOG_INFO, "Closed connection from %s", ip_str);
     }
+
+    
     
     return 0;
 }
