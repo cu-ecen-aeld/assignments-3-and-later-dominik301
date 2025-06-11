@@ -1,7 +1,7 @@
 # Makefile for server/aesdsocket
 
 # Variables
-CC := $(CROSS_COMPILE)gcc
+CC ?= $(CROSS_COMPILE)gcc
 CFLAGS := -Wall -Werror
 TARGET := aesdsocket
 SRCS := aesdsocket.c
