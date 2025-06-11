@@ -14,7 +14,7 @@ all: $(TARGET)
 
 # Link step
 $(TARGET): $(OBJS)
-	$(CC) $(CFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^
 
 # Compile step
 %.o: %.c
