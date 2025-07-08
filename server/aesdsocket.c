@@ -16,6 +16,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <stdint.h>
+#include <fcntl.h>
 
 #define BUFFER_SIZE 1024
 #define FILE_PATH "/dev/aesdchar"
@@ -55,8 +56,8 @@ void* threadfunc(void* thread_param)
     };
 
     // Open file for writing
-    fp = fopen(FILE_PATH, "a+");
-    if (fp == NULL) {
+    int fd = open(FILE_PATH, O_RDWR | O_APPEND);
+    if (fd < 0) {
         syslog(LOG_ERR, "Failed to open file '%s' for writing", FILE_PATH);
         pthread_mutex_unlock(&lock);
         close(thread_func_args->clientfd);
@@ -70,7 +71,8 @@ void* threadfunc(void* thread_param)
         syslog(LOG_ERR, "Memory allocation failed");
         pthread_mutex_unlock(&lock);
         close(thread_func_args->clientfd);
-        fclose(fp);
+        //fclose(fp);
+        close(fd);
         return thread_param;
     }
     temp_buffer[0] = '\0';
@@ -87,7 +89,7 @@ void* threadfunc(void* thread_param)
                 syslog(LOG_ERR, "Memory reallocation failed");
                 free(temp_buffer);
                 close(thread_func_args->clientfd);
-                fclose(fp);
+                //fclose(fp);
                 continue;
             }
             temp_buffer = new_buf;
@@ -95,11 +97,13 @@ void* threadfunc(void* thread_param)
         strcat(temp_buffer, buffer);
         total_len += bytes_received;
         if (strchr(buffer, '\n')) {
-            fprintf(fp, "%s", temp_buffer);
-            fflush(fp);
+            write(fd, temp_buffer, strlen(temp_buffer));
+            //fprintf(fp, "%s", temp_buffer);
+            //fflush(fp);
             
-            fseek(fp, 0, SEEK_SET);
-            while (fgets(buffer, BUFFER_SIZE, fp)){
+            //fseek(fp, 0, SEEK_SET);
+            lseek(fd, 0, SEEK_SET);
+            while ((bytes_received  = read(fd, buffer, BUFFER_SIZE)) > 0){ //fgets(buffer, BUFFER_SIZE, fp)
                 ssize_t ret = send(thread_func_args->clientfd, buffer, strlen(buffer), 0);
                 if (ret == -1){
                     syslog(LOG_ERR, "Failed send %s", strerror(errno));
@@ -112,7 +116,8 @@ void* threadfunc(void* thread_param)
     free(temp_buffer);
 
     // Clean up
-    fclose(fp);
+    //fclose(fp);
+    close(fd);
     fp = NULL;
     pthread_mutex_unlock(&lock);
     close(thread_func_args->clientfd);
@@ -128,7 +133,7 @@ struct timer_thread_data {
 
 };
 
-static void timer_thread ( union sigval sigval ){
+/*static void timer_thread ( union sigval sigval ){
     //struct timer_thread_data *td = (struct timer_thread_data*) sigval.sival_ptr;
     if (pthread_mutex_lock(&lock) != 0) {
         syslog(LOG_ERR, "Error %d (%s) locking thread data!", errno, strerror(errno));
@@ -163,7 +168,7 @@ static void timer_thread ( union sigval sigval ){
         fclose(fp);
         pthread_mutex_unlock(&lock);
     }
-}
+}*/
 
 void cleanup_and_exit(int signo) {
     syslog(LOG_INFO, "Caught signal, exiting");
@@ -263,10 +268,10 @@ int main(int argc, char *argv[]) {
             exit(EXIT_FAILURE);
         }
     }
-    struct sigevent sev;
+    /*struct sigevent sev;
     struct timer_thread_data td;
 
-    /*int clock_id = CLOCK_MONOTONIC;
+    int clock_id = CLOCK_MONOTONIC;
     memset(&sev,0,sizeof(struct sigevent));
     sev.sigev_notify = SIGEV_THREAD;
     sev.sigev_value.sival_ptr = &td;
