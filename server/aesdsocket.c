@@ -98,13 +98,16 @@ void* threadfunc(void* thread_param)
         total_len += bytes_received;
         if (strchr(buffer, '\n')) {
             write(fd, temp_buffer, strlen(temp_buffer));
+            //fsync(fd);
             //fprintf(fp, "%s", temp_buffer);
             //fflush(fp);
+            close(fd);
+            fd = open(FILE_PATH, O_RDONLY);
             
             //fseek(fp, 0, SEEK_SET);
-            lseek(fd, 0, SEEK_SET);
+            //lseek(fd, 0, SEEK_SET);
             while ((bytes_received  = read(fd, buffer, BUFFER_SIZE)) > 0){ //fgets(buffer, BUFFER_SIZE, fp)
-                ssize_t ret = send(thread_func_args->clientfd, buffer, strlen(buffer), 0);
+                ssize_t ret = send(thread_func_args->clientfd, buffer, bytes_received, 0);
                 if (ret == -1){
                     syslog(LOG_ERR, "Failed send %s", strerror(errno));
                 }
