@@ -18,7 +18,7 @@
 #include <stdint.h>
 
 #define BUFFER_SIZE 1024
-#define FILE_PATH "/var/tmp/aesdsocketdata"
+#define FILE_PATH "/dev/aesdchar"
 
 int sockfd = -1;
 //int clientfd = -1;
@@ -187,7 +187,7 @@ void cleanup_and_exit(int signo) {
         timer_delete(timer_id);
     if (fp)
         fclose(fp);
-    remove(FILE_PATH);
+    //remove(FILE_PATH);
 
     closelog();
     exit(0);
@@ -266,7 +266,7 @@ int main(int argc, char *argv[]) {
     struct sigevent sev;
     struct timer_thread_data td;
 
-    int clock_id = CLOCK_MONOTONIC;
+    /*int clock_id = CLOCK_MONOTONIC;
     memset(&sev,0,sizeof(struct sigevent));
     sev.sigev_notify = SIGEV_THREAD;
     sev.sigev_value.sival_ptr = &td;
@@ -274,10 +274,6 @@ int main(int argc, char *argv[]) {
     if (timer_create(clock_id, &sev,&timer_id) != 0){
         syslog(LOG_ERR, "Error creating timer: %s", strerror(errno));
     } else {
-        /*struct timespec sleep_time;
-        sleep_time.tv_sec = 10;
-        sleep_time.tv_nsec = 1000000;
-        run_timer_test(clock_id,timer_id,10,&sleep_time,&td);*/
 
         struct itimerspec its;
         its.it_value.tv_sec = 10; // Initial expiration
@@ -289,7 +285,7 @@ int main(int argc, char *argv[]) {
         if (timer_settime(timer_id, 0, &its, NULL) == -1) {
             syslog(LOG_ERR, "Error setting timer: %s", strerror(errno));
         }
-    }
+    }*/
 
     // Listens for and accepts a connection
 

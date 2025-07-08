@@ -109,9 +109,26 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
 		goto out;
 	}
 
+    char *new_buf = krealloc(dev->partial_buff, dev->partial_size + count, GFP_KERNEL);
+    if (!new_buf) {
+        kfree(kbuf);
+        goto out;
+    }
+
+    memcpy(new_buf + dev->partial_size, kbuf, count);
+    dev->partial_buff = new_buf;
+    dev->partial_size += count;
+    dev->partial_buff[dev->partial_size] = buf;
+    kfree(kbuf);
+
+    if (!memchr(dev->partial_buff, '\n', dev->partial_size)) {
+        retval = count;
+        goto out;
+    }
+
     struct aesd_buffer_entry entry;
-    entry.buffptr = kbuf;
-    entry.size = count;
+    entry.buffptr = dev->partial_buff;
+    entry.size = dev->partial_size;
 
     if (dev->buff->full) {
         kfree(dev->buff->entry[dev->buff->in_offs].buffptr);
@@ -120,6 +137,9 @@ ssize_t aesd_write(struct file *filp, const char __user *buf, size_t count,
     aesd_circular_buffer_add_entry(dev->buff, &entry);
 	*f_pos += count;
 	retval = count;
+
+    dev->partial_buff = NULL;
+    dev->partial_size = 0;
 
   out:
 	mutex_unlock(&dev->lock);
