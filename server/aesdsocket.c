@@ -17,6 +17,7 @@
 #include <sys/time.h>
 #include <stdint.h>
 #include <fcntl.h>
+#include "../aesd-char-driver/aesd_ioctl.h"
 
 #define BUFFER_SIZE 1024
 #define FILE_PATH "/dev/aesdchar"
@@ -97,12 +98,29 @@ void* threadfunc(void* thread_param)
         strcat(temp_buffer, buffer);
         total_len += bytes_received;
         if (strchr(buffer, '\n')) {
-            write(fd, temp_buffer, strlen(temp_buffer));
+            const char SEEK_PREFIX[] = "AESDCHAR_IOCSEEKTO:";
+            if(!strncmp(temp_buffer, SEEK_PREFIX, strlen(SEEK_PREFIX))) {
+                unsigned long cmd, off;
+                char *endptr;
+                char *buff = temp_buffer;
+                buff += strlen(SEEK_PREFIX);
+                cmd = strtoul(buff, &endptr, 10);
+                buff = endptr + 1;
+                off = strtoul(buff, &endptr, 10);
+                struct aesd_seekto seek = {cmd, off};
+                if (ioctl(fd, AESDCHAR_IOCSEEKTO, &seek)){
+                    syslog(LOG_ERR, "Failed ioctl %s", strerror(errno));
+                }
+            }
+            else {
+                write(fd, temp_buffer, strlen(temp_buffer));
+            }
+            
             //fsync(fd);
             //fprintf(fp, "%s", temp_buffer);
             //fflush(fp);
-            close(fd);
-            fd = open(FILE_PATH, O_RDONLY);
+            //close(fd);
+            //fd = open(FILE_PATH, O_RDONLY);
             
             //fseek(fp, 0, SEEK_SET);
             //lseek(fd, 0, SEEK_SET);
